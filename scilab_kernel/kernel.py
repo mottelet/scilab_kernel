@@ -40,7 +40,32 @@ class ScilabKernel(ProcessMetaKernel):
     language_info = {
         'name': 'scilab',
         'file_extension': '.sci',
-        "mimetype": "text/x-scilab",
+        # JupyterLab's CodeMirror editor has no "scilab" language mode; it
+        # picks a mode by matching against its registry, and "octave" is
+        # the closest available one (Scilab's syntax is close to
+        # Octave/Matlab). This only affects the live editor's highlighting
+        # -- nbconvert/Pygments export still use the 'name' above, which
+        # is a real Pygments lexer ("scilab").
+        #
+        # codemirror_mode (not just mimetype) is required: JupyterLab
+        # 4.6's getMimeTypeByLanguage() only consults language_info.mimetype
+        # through a fallback object it builds as {mimetype, name, ext}, but
+        # the language registry's findBest() destructures {mime, name,
+        # extensions} -- a key-name mismatch that makes the mimetype-only
+        # path silently fail (falls back to plaintext, no highlighting at
+        # all). Setting codemirror_mode goes through the working code path
+        # instead (findByName(), which is case-insensitive).
+        #
+        # Known limitation: Octave's CodeMirror mode only knows "%" as a
+        # line-comment token, while Scilab uses "//". So "//" comments
+        # won't be styled as comments, and JupyterLab's "Toggle Comment"
+        # (Ctrl+/) will insert "%" on a Scilab cell, which is invalid
+        # Scilab syntax and must be fixed up by hand. A correct fix needs a
+        # dedicated Scilab CodeMirror language mode (a companion JupyterLab
+        # extension); this is a stopgap that gets most other tokens
+        # (strings, numbers, operators, keywords) highlighted correctly.
+        "mimetype": "text/x-octave",
+        "codemirror_mode": "octave",
         "version": __version__,
         'help_links': MetaKernel.help_links,
     }

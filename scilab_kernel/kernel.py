@@ -264,14 +264,14 @@ class ScilabKernel(ProcessMetaKernel):
         Get completions from kernel based on info dict.
         """
         obj = info['obj']
-        if not obj:
-            # metakernel's do_complete() calls get_completions() even when
-            # the cursor sits right after a non-identifier character (e.g.
-            # "+", "-", "/") and there is no partial word to complete --
-            # info['obj'] is "" in that case. completion("") matches every
-            # name Scilab knows (thousands), which isn't a useful
-            # completion menu, so there is nothing to offer here.
-            return []
+        # metakernel's do_complete() calls get_completions() even when the
+        # cursor sits right after a non-identifier character (e.g. "+",
+        # "-", "/") and there is no partial word to complete -- info['obj']
+        # is "" in that case. completion("") then matches every name
+        # Scilab knows, which is intentional: it's the same convention
+        # IPython follows (Tab on an empty prefix browses everything), and
+        # scilab-adv-cli's own interactive completion does the same thing.
+        #
         # completion() displays its result on Scilab's own console, quoted
         # (Scilab now shows string arrays as `"a"  "b"  ...`), which broke
         # the parsing below; printf("%s\n", ...) instead prints each match

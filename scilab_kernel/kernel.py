@@ -290,6 +290,25 @@ class ScilabKernel(ProcessMetaKernel):
         return [line.strip() for line in text.splitlines()
                 if info['obj'] in line]
 
+    async def do_complete(self, code, cursor_pos):
+        content = await super().do_complete(code, cursor_pos)
+        if not content.get('matches'):
+            # metakernel's parser sets cursor_start to 0 (start of buffer)
+            # whenever there is no partial word at the cursor, regardless
+            # of whether any completions were actually found -- e.g. after
+            # "plot(1:10,", cursor_start ends up 0 with cursor_end at the
+            # cursor position, even though there is nothing to complete.
+            # With zero matches that wide range should never matter to a
+            # kernel-only completer, but JupyterLab also has its own
+            # generic word-from-document completer active alongside the
+            # kernel one, and a wide, kernel-reported range spanning real
+            # words ("plot", "1", "10") gives it something to offer -- an
+            # unwanted menu of words already on the line. Collapsing to a
+            # zero-width point at the cursor whenever we have nothing
+            # avoids handing it that range.
+            content['cursor_start'] = content['cursor_end']
+        return content
+
     def handle_plot_settings(self):
         """Handle the current plot settings"""
         settings = self.plot_settings

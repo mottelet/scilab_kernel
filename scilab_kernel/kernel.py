@@ -28,6 +28,36 @@ from . import __version__
 _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x08')
 
 
+class _ScilabREPLWrapper(REPLWrapper):
+    """A :class:`REPLWrapper` that knows how to escape Scilab's continuation
+    prompt.
+
+    When a cell leaves a block unclosed (``function x=f(y)`` with no
+    ``endfunction``, an ``if``/``for``/``while``/... with no matching
+    ``end``, ...), Scilab drops into a continuation prompt waiting for the
+    rest of the block. REPLWrapper's own recovery for this sends Ctrl-C and
+    waits (up to 30s) for a normal prompt to come back -- but
+    ``scilab-adv-cli`` does not respond to SIGINT while waiting for more
+    input, so that 30s is always spent in full, and the user just sees a
+    generic "Timed out" error after a long pause.
+
+    A bare "end" closes any Scilab block type and returns to the top-level
+    prompt in well under a second; nested unclosed blocks need one "end"
+    per level, so it is sent repeatedly until a normal prompt reappears.
+    """
+
+    _MAX_END_ATTEMPTS = 50
+
+    def interrupt(self, continuation=False):
+        if not continuation:
+            return super().interrupt(continuation=continuation)
+        for _ in range(self._MAX_END_ATTEMPTS):
+            self.sendline("end")
+            if self._expect_prompt(timeout=-1) == 0:
+                break
+        return self.child.before
+
+
 def get_kernel_json():
     """Get the kernel json for the kernel.
     """
@@ -182,7 +212,7 @@ class ScilabKernel(ProcessMetaKernel):
             echo=echo,
             codec_errors="ignore",
             encoding="utf-8")
-        wrapper = REPLWrapper(child, orig_prompt, change_prompt,
+        wrapper = _ScilabREPLWrapper(child, orig_prompt, change_prompt,
             prompt_emit_cmd=prompt_cmd, echo=echo,
             continuation_prompt_regex=continuation_prompt)
         

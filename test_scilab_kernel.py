@@ -1,6 +1,8 @@
 """Example use of jupyter_kernel_test, with tests for IPython."""
 
 import unittest
+from typing import ClassVar
+
 import jupyter_kernel_test as jkt
 
 
@@ -11,12 +13,12 @@ class ScilabKernelTests(jkt.KernelTests):
 
     code_hello_world = "disp('hello, world')"
 
-    code_display_data = [
+    code_display_data: ClassVar[list] = [
         {'code': '%plot -f png\nplot([1,2,3])', 'mime': 'image/png'},
         {'code': '%plot -f svg\nplot([1,2,3])', 'mime': 'image/svg+xml'}
     ]
 
-    completion_samples = [
+    completion_samples: ClassVar[list] = [
         {
             'text': 'one',
             'matches': {'ones'},

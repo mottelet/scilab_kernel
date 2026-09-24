@@ -1,4 +1,6 @@
 from metakernel import Magic, option
+
+
 class ScilabPlotMagic(Magic):
 
     @option(

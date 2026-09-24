@@ -1,24 +1,56 @@
-from __future__ import print_function, absolute_import
 
 import codecs
+import importlib
 import json
 import os
+import platform
 import re
 import shutil
-import sys
-import platform
-import tempfile
-import importlib
 import subprocess
+import sys
+import tempfile
+from typing import ClassVar
+
 if importlib.util.find_spec('winreg'):
     import winreg
 from xml.dom import minidom
+from xml.parsers.expat import ExpatError
 
+from IPython.display import SVG, Image
 from metakernel import MetaKernel, ProcessMetaKernel, REPLWrapper, pexpect
 from metakernel.pexpect import which
-from IPython.display import Image, SVG
 
 from . import __version__
+
+
+class _ScilabREPLWrapper(REPLWrapper):
+    """A :class:`REPLWrapper` that knows how to escape Scilab's continuation
+    prompt.
+
+    When a cell leaves a block unclosed (``function x=f(y)`` with no
+    ``endfunction``, an ``if``/``for``/``while``/... with no matching
+    ``end``, ...), Scilab drops into a continuation prompt waiting for the
+    rest of the block. REPLWrapper's own recovery for this sends Ctrl-C and
+    waits (up to 30s) for a normal prompt to come back -- but
+    ``scilab-adv-cli`` does not respond to SIGINT while waiting for more
+    input, so that 30s is always spent in full, and the user just sees a
+    generic "Timed out" error after a long pause.
+
+    A bare "end" closes any Scilab block type and returns to the top-level
+    prompt in well under a second; nested unclosed blocks need one "end"
+    per level, so it is sent repeatedly until a normal prompt reappears.
+    """
+
+    _MAX_END_ATTEMPTS = 50
+
+    def interrupt(self, continuation=False):
+        if not continuation:
+            return super().interrupt(continuation=continuation)
+        for _ in range(self._MAX_END_ATTEMPTS):
+            self.sendline("end")
+            if self._expect_prompt(timeout=-1) == 0:
+                break
+        return self.child.before
 
 
 def get_kernel_json():
@@ -37,7 +69,7 @@ class ScilabKernel(ProcessMetaKernel):
     implementation_version = __version__,
     language = 'scilab'
     language_version = __version__,
-    language_info = {
+    language_info: ClassVar[dict] = {
         'name': 'scilab',
         'file_extension': '.sci',
         "mimetype": "text/x-scilab",
@@ -106,7 +138,7 @@ class ScilabKernel(ProcessMetaKernel):
         # read the windows registry
         if os.name == 'nt':
             try:
-                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "Scilab5.sce\shell\open\command") as key:
+                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Scilab5.sce\shell\open\command") as key:
                     cmd : str = winreg.EnumValue(key, 0)[1]
                     executable = cmd.split(r'"')[1].replace("wscilex.exe", "wscilex-cli.exe")
                     self.log.warning('Windows registry binary: ' + executable)
@@ -116,9 +148,9 @@ class ScilabKernel(ProcessMetaKernel):
 
         # detect macOS bundle
         if platform.system() == 'Darwin':
-            process = subprocess.run(['mdfind', '-onlyin', '/Applications', 'kMDItemCFBundleIdentifier=org.scilab.modules.jvm.Scilab'], 
-                                 stdout=subprocess.PIPE, 
-                                 universal_newlines=True)
+            process = subprocess.run(['mdfind', '-onlyin', '/Applications', 'kMDItemCFBundleIdentifier=org.scilab.modules.jvm.Scilab'],
+                                 stdout=subprocess.PIPE,
+                                 text=True, check=False)
             bundles = process.stdout
             if len(bundles) > 0:
                 executable = bundles.split('\n', 1)[0] + "/Contents/bin/scilab-adv-cli"
@@ -145,7 +177,7 @@ class ScilabKernel(ProcessMetaKernel):
         orig_prompt = r'-[0-9]*->'
         prompt_cmd = None
         change_prompt = None
-        continuation_prompt = '  \>'
+        continuation_prompt = r'  \>'
         self._first = True
         if os.name == 'nt':
             prompt_cmd = 'printf("-->")'
@@ -157,7 +189,7 @@ class ScilabKernel(ProcessMetaKernel):
             echo=echo,
             codec_errors="ignore",
             encoding="utf-8")
-        wrapper = REPLWrapper(child, orig_prompt, change_prompt,
+        wrapper = _ScilabREPLWrapper(child, orig_prompt, change_prompt,
             prompt_emit_cmd=prompt_cmd, echo=echo,
             continuation_prompt_regex=continuation_prompt)
         
@@ -166,7 +198,7 @@ class ScilabKernel(ProcessMetaKernel):
     
     def Write(self, message):
         clean_msg = message.strip("\n\r\t")
-        super(ScilabKernel, self).Write(clean_msg)
+        super().Write(clean_msg)
 
     def Print(self, text):
         text = str(text).strip('\x1b[0m').replace('\u0008', '').strip()
@@ -174,7 +206,7 @@ class ScilabKernel(ProcessMetaKernel):
                 if (not line.startswith(chr(27)))]
         text = '\n'.join(text)
         if text:
-            super(ScilabKernel, self).Print(text)
+            super().Print(text)
 
     def do_execute_direct(self, code, silent=False):
         if self._first:
@@ -182,7 +214,7 @@ class ScilabKernel(ProcessMetaKernel):
             self.handle_plot_settings()
             setup = self._setup.strip()
             self.do_execute_direct(setup, True)
-        resp = super(ScilabKernel, self).do_execute_direct(code, silent=silent)
+        resp = super().do_execute_direct(code, silent=silent)
         if silent:
             return resp
         if self.plot_settings.get('backend', None) == 'inline':
@@ -198,17 +230,18 @@ class ScilabKernel(ProcessMetaKernel):
                 return None
             else:
                 return ""
-        self.do_execute_direct('help %s' % obj, True)
+        self.do_execute_direct(f'help {obj}', True)
 
     def do_shutdown(self, restart):
         self.wrapper.sendline('quit')
-        super(ScilabKernel, self).do_shutdown(restart)
+        super().do_shutdown(restart)
 
     def get_completions(self, info):
         """
         Get completions from kernel based on info dict.
         """
-        cmd = 'completion("%s")' % info['obj']
+        obj = info['obj']
+        cmd = f'completion("{obj}")'
         output = self.do_execute_direct(cmd, True)
         if not output:
             return []
@@ -238,17 +271,17 @@ class ScilabKernel(ProcessMetaKernel):
             try:
                 width, height = settings['size'].split(',')
                 width, height = int(width), int(height)
-            except Exception as e:
-                self.Error('Error setting plot settings: %s' % e)
+            except (ValueError, AttributeError) as e:
+                self.Error(f'Error setting plot settings: {e}')
 
-        cmds.append('h.figure_size = [%s,%s];' % (width, height))
-        cmds.append('h.axes_size = [%s * 0.98, %s * 0.8];' % (width, height))
+        cmds.append(f'h.figure_size = [{width},{height}];')
+        cmds.append(f'h.axes_size = [{width} * 0.98, {height} * 0.8];')
 
         if settings['backend'] == 'inline':
             cmds.append('h.visible = "off";')
         else:
             cmds.append('h.visible = "on";')
-        super(ScilabKernel, self).do_execute_direct('\n'.join(cmds), True)
+        super().do_execute_direct('\n'.join(cmds), True)
 
     def make_figures(self, plot_dir=None):
         """Create figures for the current figures.
@@ -267,7 +300,7 @@ class ScilabKernel(ProcessMetaKernel):
         plot_format = self._plot_fmt.lower()
         make_figs = '_make_figures("%s", "%s");'
         make_figs = make_figs % (plot_dir, plot_format)
-        super(ScilabKernel, self).do_execute_direct(make_figs, True)
+        super().do_execute_direct(make_figs, True)
         return plot_dir
 
     def extract_figures(self, plot_dir):
@@ -291,7 +324,7 @@ class ScilabKernel(ProcessMetaKernel):
                 if self.error_handler:
                     self.error_handler(e)
                 else:
-                    raise e
+                    raise
         return images
 
     def _handle_svg(self, filename):
@@ -305,14 +338,14 @@ class ScilabKernel(ProcessMetaKernel):
         im = SVG(data=data)
         try:
             im.data = self._fix_svg_size(im.data)
-        except Exception:
-            pass
+        except (ValueError, ExpatError) as e:
+            self.log.debug(f'Could not resize SVG (unexpected shape from GnuPlot?): {e}')
         try:
             settings = self.plot_settings
             if settings['antialiasing']:
                 im.data = self._fix_svg_antialiasing(im.data)
-        except Exception:
-            pass
+        except (ValueError, ExpatError) as e:
+            self.log.debug(f'Could not adjust SVG antialiasing (unexpected shape from GnuPlot?): {e}')
         return im
 
     def _fix_svg_size(self, data):
@@ -340,8 +373,8 @@ class ScilabKernel(ProcessMetaKernel):
                 width = width * settings['height'] / height
             height = settings['height']
 
-        svg.setAttribute('width', '%dpx' % width)
-        svg.setAttribute('height', '%dpx' % height)
+        svg.setAttribute('width', f'{int(width)}px')
+        svg.setAttribute('height', f'{int(height)}px')
         return svg.toxml()
 
     def _fix_svg_antialiasing(self, data):

@@ -38,6 +38,7 @@ content-type = "text/x-rst"
 
 [project.optional-dependencies]
 test = ["pytest", "nbconvert", "jupyter_kernel_test", "nbconvert"]
+jupyterlab = ["jupyterlab-scilab"]
 
 [tool.hatch.build.targets.wheel.shared-data]
 "jupyter-data/share" = "share"

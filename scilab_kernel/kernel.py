@@ -22,6 +22,11 @@ from metakernel.pexpect import which
 
 from . import __version__
 
+# Scilab's terminal control codes (mode/cursor resets, backspace) end up
+# glued to the front of the *first* line of any console output -- used to
+# strip those out of completion results, see get_completions() below.
+_ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x08')
+
 
 def get_kernel_json():
     """Get the kernel json for the kernel.
@@ -229,12 +234,22 @@ class ScilabKernel(ProcessMetaKernel):
         Get completions from kernel based on info dict.
         """
         obj = info['obj']
-        cmd = f'completion("{obj}")'
+        # completion() displays its result on Scilab's own console, quoted
+        # (Scilab now shows string arrays as `"a"  "b"  ...`), which broke
+        # the parsing below; printf("%s\n", ...) instead prints each match
+        # bare, one per line. Only printf when there is at least one match:
+        # it errors out on an empty array. Both calls run in the same
+        # persistent Scilab session as the user's own code, so nothing here
+        # is assigned to a variable that could shadow one of theirs.
+        cmd = (
+            f'if ~isempty(completion("{obj}")) then '
+            f'printf("%s\\n",completion("{obj}")); end'
+        )
         output = self.do_execute_direct(cmd, True)
         if not output:
             return []
-        output = output.output.replace('!', '')
-        return [line.strip() for line in output.splitlines()
+        text = _ANSI_ESCAPE_RE.sub('', output.output)
+        return [line.strip() for line in text.splitlines()
                 if info['obj'] in line]
 
     def handle_plot_settings(self):

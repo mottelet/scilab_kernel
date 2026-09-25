@@ -255,12 +255,6 @@ class ScilabKernel(ProcessMetaKernel):
         if text:
             super().Print(text)
 
-    def Error(self, *objects, **kwargs):
-        # A blank line on either side sets the error text apart from
-        # whatever output (if any) precedes it in the same red block.
-        kwargs['sep'] = '\n'
-        super().Error('', *objects, '', **kwargs)
-
     def _had_scilab_error(self):
         """Whether the command that just ran left an error in Scilab's own
         error register (undefined variable, wrong dimensions, a user's own

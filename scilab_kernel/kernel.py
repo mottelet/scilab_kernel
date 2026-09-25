@@ -27,6 +27,19 @@ from . import __version__
 # strip those out of completion results, see get_completions() below.
 _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x08')
 
+# Used to detect, after a cell has run, whether Scilab itself flagged an
+# error (undefined variable, wrong dimensions, syntax error, a user's own
+# error(...) call, ...) so its output can be shown in red like any other
+# error, see Write()/_had_scilab_error() below. lasterror() returns [] (an
+# empty matrix, typeof "constant") when nothing went wrong, or the error
+# message (typeof "string", possibly a multi-line string array for a
+# syntax error) otherwise -- and, calling it clears it, so this is safe to
+# run after every non-silent execution without leaking stale state into
+# the next cell.
+_ERROR_MARKER = '<<<SCIKERNELERR>>>'
+_ERROR_FLAG_RE = re.compile(re.escape(_ERROR_MARKER) + r'(\w+)' + re.escape(_ERROR_MARKER))
+_CHECK_ERROR_CMD = f'printf("{_ERROR_MARKER}%s{_ERROR_MARKER}", typeof(lasterror()))'
+
 
 class _ScilabREPLWrapper(REPLWrapper):
     """A :class:`REPLWrapper` that knows how to escape Scilab's continuation
@@ -202,6 +215,7 @@ class ScilabKernel(ProcessMetaKernel):
         change_prompt = None
         continuation_prompt = r'  \>'
         self._first = True
+        self._pending_chunk = None
         if os.name == 'nt':
             prompt_cmd = 'printf("-->")'
             echo = False
@@ -220,8 +234,18 @@ class ScilabKernel(ProcessMetaKernel):
         return wrapper
     
     def Write(self, message):
+        # A Scilab error is always the last thing printed for a command --
+        # execution stops as soon as one occurs -- so whether the *final*
+        # chunk of a command's output should be shown as an error is only
+        # known once the command has finished (see _had_scilab_error()).
+        # Every chunk is therefore held back by one: each new chunk flushes
+        # the previous one (now known not to be the last) as plain output,
+        # and the true last chunk sits in self._pending_chunk until
+        # do_execute_direct() flushes it below, through Write or Error.
         clean_msg = message.strip("\n\r\t")
-        super().Write(clean_msg)
+        pending, self._pending_chunk = self._pending_chunk, clean_msg
+        if pending is not None:
+            super().Write(pending)
 
     def Print(self, text):
         text = str(text).strip('\x1b[0m').replace('\u0008', '').strip()
@@ -231,13 +255,53 @@ class ScilabKernel(ProcessMetaKernel):
         if text:
             super().Print(text)
 
+    def Error(self, *objects, **kwargs):
+        # A blank line on either side sets the error text apart from
+        # whatever output (if any) precedes it in the same red block.
+        kwargs['sep'] = '\n'
+        super().Error('', *objects, '', **kwargs)
+
+    def _had_scilab_error(self):
+        """Whether the command that just ran left an error in Scilab's own
+        error register (undefined variable, wrong dimensions, a user's own
+        error(...) call, a syntax error, ...). Calling lasterror() clears
+        it, so this also resets it for the next cell.
+        """
+        try:
+            resp = super().do_execute_direct(_CHECK_ERROR_CMD, True)
+        except Exception:  # noqa: BLE001 -- best-effort check, never fatal to the cell
+            return False
+        if not resp:
+            return False
+        match = _ERROR_FLAG_RE.search(resp.output)
+        return bool(match) and match.group(1) == 'string'
+
+    def _flush_pending_output(self):
+        pending, self._pending_chunk = self._pending_chunk, None
+        if pending is None:
+            return
+        if self._had_scilab_error():
+            # Error() wraps the whole message in RED...NORMAL, but Scilab's
+            # own terminal control codes (see _ANSI_ESCAPE_RE above) glued
+            # onto raw output include a reset (\x1b[0m) of their own --
+            # left in, it cancels the red partway through the message.
+            self.Error(_ANSI_ESCAPE_RE.sub('', pending).strip())
+        else:
+            super().Write(pending)
+
     def do_execute_direct(self, code, silent=False):
         if self._first:
             self._first = False
             self.handle_plot_settings()
             setup = self._setup.strip()
             self.do_execute_direct(setup, True)
+            # try/catch in the setup script above (getd(".")) can leave an
+            # error behind; clear it so it isn't mistaken for one of the
+            # user's own further down.
+            self._had_scilab_error()
         resp = super().do_execute_direct(code, silent=silent)
+        if not silent:
+            self._flush_pending_output()
         if silent:
             return resp
         if self.plot_settings.get('backend', None) == 'inline':
